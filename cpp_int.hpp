@@ -1,5 +1,5 @@
-#ifndef BIG_INT_HPP
-#define BIG_INT_HPP
+#ifndef CPP_INT_HPP
+#define CPP_INT_HPP
 
 #include <cstdint>
 #include <cstddef>
@@ -130,7 +130,5 @@ private:
 };
 
 cpp_int abs(const cpp_int &value);
-
-using BigInt = cpp_int;
 
 #endif
