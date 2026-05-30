@@ -1,371 +1,605 @@
 #include "big_int.hpp"
+
 #include <algorithm>
-#include <iostream>
+#include <cctype>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <stdexcept>
-BigInt::BigInt() {}
-void BigInt::pop_zero()
+
+const std::uint32_t cpp_int::BASE;
+const int cpp_int::BASE_DIGITS;
+
+cpp_int::cpp_int() : limbs(1, 0), negative(false)
 {
-    while (digits.size() > 0 && digits.back() == 0)
+}
+
+cpp_int::cpp_int(const char *value) : cpp_int()
+{
+    if (value == 0)
     {
-        digits.pop_back();
+        throw std::invalid_argument("cpp_int cannot be constructed from a null string");
+    }
+    read_decimal(value);
+}
+
+cpp_int::cpp_int(const std::string &value) : cpp_int()
+{
+    read_decimal(value);
+}
+
+bool cpp_int::is_zero() const
+{
+    return limbs.size() == 1 && limbs[0] == 0;
+}
+
+int cpp_int::sign() const
+{
+    if (is_zero())
+    {
+        return 0;
+    }
+    return negative ? -1 : 1;
+}
+
+std::string cpp_int::str() const
+{
+    std::ostringstream out;
+    out << *this;
+    return out.str();
+}
+
+cpp_int &cpp_int::operator=(const char *value)
+{
+    if (value == 0)
+    {
+        throw std::invalid_argument("cpp_int cannot be assigned from a null string");
+    }
+    return *this = std::string(value);
+}
+
+cpp_int &cpp_int::operator=(const std::string &value)
+{
+    read_decimal(value);
+    return *this;
+}
+
+cpp_int cpp_int::operator+() const
+{
+    return *this;
+}
+
+cpp_int cpp_int::operator-() const
+{
+    cpp_int result = *this;
+    if (!result.is_zero())
+    {
+        result.negative = !result.negative;
+    }
+    return result;
+}
+
+cpp_int &cpp_int::operator+=(const cpp_int &rhs)
+{
+    *this = *this + rhs;
+    return *this;
+}
+
+cpp_int &cpp_int::operator-=(const cpp_int &rhs)
+{
+    *this = *this - rhs;
+    return *this;
+}
+
+cpp_int &cpp_int::operator*=(const cpp_int &rhs)
+{
+    *this = *this * rhs;
+    return *this;
+}
+
+cpp_int &cpp_int::operator/=(const cpp_int &rhs)
+{
+    *this = *this / rhs;
+    return *this;
+}
+
+cpp_int &cpp_int::operator%=(const cpp_int &rhs)
+{
+    *this = *this % rhs;
+    return *this;
+}
+
+cpp_int &cpp_int::operator<<=(unsigned int shift)
+{
+    bool was_negative = negative;
+    while (shift > 0)
+    {
+        unsigned int step = std::min(shift, 29u);
+        *this = mul_abs_small(*this, static_cast<std::uint32_t>(1u << step));
+        shift -= step;
+    }
+    negative = was_negative && !is_zero();
+    return *this;
+}
+
+cpp_int &cpp_int::operator>>=(unsigned int shift)
+{
+    bool was_negative = negative;
+    while (shift > 0)
+    {
+        unsigned int step = std::min(shift, 29u);
+        *this = div_abs_small(*this, static_cast<std::uint32_t>(1u << step));
+        shift -= step;
+    }
+    negative = was_negative && !is_zero();
+    return *this;
+}
+
+cpp_int &cpp_int::operator++()
+{
+    *this += 1;
+    return *this;
+}
+
+cpp_int cpp_int::operator++(int)
+{
+    cpp_int old = *this;
+    ++(*this);
+    return old;
+}
+
+cpp_int &cpp_int::operator--()
+{
+    *this -= 1;
+    return *this;
+}
+
+cpp_int cpp_int::operator--(int)
+{
+    cpp_int old = *this;
+    --(*this);
+    return old;
+}
+
+void cpp_int::normalize()
+{
+    while (limbs.size() > 1 && limbs.back() == 0)
+    {
+        limbs.pop_back();
+    }
+
+    if (is_zero())
+    {
+        negative = false;
     }
 }
-BigInt::BigInt(int x)
+
+void cpp_int::read_decimal(const std::string &value)
 {
-    if (x < 0)
-        is_positive = false, x = -x;
-    do
+    limbs.assign(1, 0);
+    negative = false;
+
+    std::size_t pos = 0;
+    while (pos < value.size() && std::isspace(static_cast<unsigned char>(value[pos])))
     {
-        // make sure there is a zero
-        digits.push_back(x % 10);
-        x = x / 10;
-    } while (x != 0);
-}
-BigInt::BigInt(std::string x)
-{
-    if (!x.size())
-    {
-        throw std::invalid_argument("string to BigInt: x is \"\"");
+        ++pos;
     }
-    if (x == "-0" || x == "0")
+
+    bool is_negative = false;
+    if (pos < value.size() && (value[pos] == '+' || value[pos] == '-'))
     {
-        digits = {0};
+        is_negative = value[pos] == '-';
+        ++pos;
+    }
+
+    while (pos < value.size() && value[pos] == '0')
+    {
+        ++pos;
+    }
+
+    if (pos == value.size())
+    {
         return;
     }
-    if (x[0] == '-')
-    {
-        is_positive = false;
-        x.erase(0, 1);
-    }
-    int n = x.size();
-    digits.resize(n);
-    for (int i = n - 1; i >= 0; i--)
-    {
-        if (x[i] >= '0' && x[i] <= '9')
-        {
-            digits[n - 1 - i] = (x[i] - '0');
-        }
-        else
-        {
-            throw std::invalid_argument("string to BigInt: " + x);
-        }
-    }
-}
-BigInt operator+(const BigInt &a, const BigInt &b)
-{
-    if (a.is_positive && !b.is_positive)
-    {
-        return a - (-b);
-    }
-    if (!a.is_positive && b.is_positive)
-    {
-        return -a - b;
-    }
-    BigInt res;
-    if (!a.is_positive && !b.is_positive)
-    {
-        res.is_positive = false;
-    }
-    // two positive
-    int n = std::max(a.digits.size(), b.digits.size());
-    res.digits.resize(n);
-    int t = 0;
-    for (int i = 0; i < n; i++)
-    {
-        if (i < a.digits.size())
-        {
-            t += a.digits[i];
-        }
-        if (i < b.digits.size())
-        {
-            t += b.digits[i];
-        }
-        if (t >= 10)
-        {
-            res.digits[i] = t - 10;
-            t = 1;
-        }
-        else
-        {
-            res.digits[i] = t;
-            t = 0;
-        }
-    }
-    if (t)
-    {
-        res.digits.push_back(t);
-    }
-    return res;
-}
-BigInt operator-(const BigInt &a, const BigInt &b)
-{
-    if (!a.is_positive && !b.is_positive)
-    {
-        return -b - (-a);
-    }
-    if (a.is_positive && !b.is_positive)
-    {
-        return a + (-b);
-    }
-    if (!a.is_positive && b.is_positive)
-    {
-        return -(-a + b);
-    }
-    if (a < b)
-    {
-        return -(b - a);
-    }
-    BigInt res;
-    // a > b > 0
-    int n = std::max(a.digits.size(), b.digits.size());
-    res.digits.resize(n);
-    int t = 0;
-    for (int i = 0; i < n; i++)
-    {
-        if (i < a.digits.size())
-        {
-            t += a.digits[i];
-        }
-        if (i < b.digits.size())
-        {
-            t -= b.digits[i];
-        }
-        if (t < 0)
-        {
-            res.digits[i] = 10 + t;
-            t = -1;
-        }
-        else
-        {
-            res.digits[i] = t;
-            t = 0;
-        }
-    }
-    res.pop_zero();
-    return res;
-}
-BigInt BigInt::operator-() const
-{
-    BigInt res = *this;
-    res.is_positive = !res.is_positive;
-    return res;
-}
-BigInt operator*(const BigInt &a, const BigInt &b)
-{
-    BigInt res;
-    for (int i = 0; i < b.digits.size(); i++)
-    {
-        BigInt t = a.mul_small(b.digits[i]);
-        t = t.mul_ten(i);
-        res = res + t;
-    }
-    res.is_positive = a.is_positive == b.is_positive;
-    return res;
-}
-std::istream &operator>>(std::istream &is, BigInt &a)
-{
-    std::string x;
-    is >> x;
-    a = BigInt(x);
-    return is;
-}
-std::ostream &operator<<(std::ostream &os, const BigInt &a)
-{
-    int n = a.digits.size();
-    if (!n)
-    {
-        os << 0;
-        return os;
-    }
-    if (!a.is_positive)
-    {
-        os << "-";
-    }
-    for (int i = n - 1; i >= 0; i--)
-    {
-        os << a.digits[i];
-    }
-    return os;
-}
-std::tuple<int, BigInt> BigInt::div_ten()
-{
-    BigInt res = *this;
-    int i = 0;
-    if (is_zero())
-    {
-        return {0, res};
-    }
-    while (!digits[i])
-    {
-        i++;
-    }
-    res.digits.erase(res.digits.begin(), res.digits.begin() + i);
-    return {i, res};
-}
-bool BigInt::is_zero() const
-{
-    return digits.size() == 1 && digits[0] == 0;
-}
-BigInt BigInt::mul_small(int x) const
-{
-    BigInt res;
-    int n = digits.size();
-    res.digits.resize(n);
-    int t = 0;
-    for (int i = 0; i < n; i++)
-    {
-        t += digits[i] * x;
-        res.digits[i] = t % 10;
-        t /= 10;
-    }
-    if (t)
-    {
-        res.digits.push_back(t);
-    }
-    return res;
-}
-BigInt BigInt::mul_ten(int x) const
-{
-    BigInt res = *this;
-    if (is_zero())
-        return res;
-    res.digits.insert(res.digits.begin(), x, 0);
-    return res;
-}
-bool operator==(const BigInt &x, const BigInt &y)
-{
-    if (x.is_zero() == true && y.is_zero() == true)
-    {
-        return true;
-    }
-    if (x.digits.size() != y.digits.size())
-    {
-        return false;
-    }
-    if (x.is_positive != y.is_positive)
-    {
-        return false;
-    }
-    for (int i = 0; i < x.digits.size(); i++)
-    {
-        if (x.digits[i] != y.digits[i])
-        {
-            return false;
-        }
-    }
-    return true;
-}
-bool operator!=(const BigInt &x, const BigInt &y)
-{
-    return !(x == y);
-}
-bool operator>(const BigInt &x, const BigInt &y)
-{
-    if (x.is_zero())
-    {
-        return !(y.is_zero() || y.is_positive);
-    }
-    if (y.is_zero())
-    {
-        return !x.is_zero() || x.is_positive;
-    }
-    if (x.is_positive != y.is_positive)
-    {
-        return x.is_positive;
-    }
-    // x and y is ++ or --
-    if (x.digits.size() > y.digits.size())
-    {
-        return x.is_positive;
-    }
-    if (x.digits.size() < y.digits.size())
-    {
-        return !x.is_positive;
-    }
-    for (int i = x.digits.size() - 1; i >= 0; i--)
-    {
-        if (x.digits[i] > y.digits[i])
-        {
-            return x.is_positive;
-        }
-        else if (x.digits[i] < y.digits[i])
-        {
-            return !x.is_positive;
-        }
-    }
-    return false;
-}
-bool operator>=(const BigInt &x, const BigInt &y)
-{
-    return x > y || x == y;
-}
-bool operator<(const BigInt &x, const BigInt &y)
-{
-    return y > x;
-}
-bool operator<=(const BigInt &x, const BigInt &y)
-{
-    return y >= x;
-}
-BigInt operator%(const BigInt &x, const BigInt &y)
-{
-    BigInt res = x - x / y * y;
-    res.is_positive = x.is_positive;
-    return res;
-}
-BigInt operator/(const BigInt &x, const BigInt &y)
-{
-    BigInt res;
-    res.is_positive = x.is_positive == y.is_positive;
-    BigInt xx = x;
-    BigInt yy = y;
-    xx.is_positive = true;
-    yy.is_positive = true;
-    if (y.is_zero())
-    {
-        throw std::invalid_argument("divisor is zero");
-    }
-    if (xx < yy)
-    {
-        return BigInt(0);
-    }
-    int lx = xx.digits.size();
-    int ly = yy.digits.size();
-    res.digits.resize(lx - ly + 1);
-    for (int i = lx - ly; i >= 0; i--)
-    {
-        BigInt t;
-        if (i < xx.digits.size())
-        {
-            t = xx.cut(i, xx.digits.size());
-        }
-        else
-        {
-            t = BigInt(0);
-        }
-        int m = 0;
-        while (yy.mul_small(m + 1) <= t)
-        {
-            m++;
-        }
-        res.digits[i] = m;
-        if (m != 0)
-        {
 
-            xx = xx - yy.mul_small(m).mul_ten(i);
+    limbs.clear();
+
+    for (std::size_t end = value.size(); end > pos;)
+    {
+        std::size_t begin = end >= pos + BASE_DIGITS ? end - BASE_DIGITS : pos;
+        std::uint32_t block = 0;
+
+        for (std::size_t i = begin; i < end; ++i)
+        {
+            if (!std::isdigit(static_cast<unsigned char>(value[i])))
+            {
+                throw std::invalid_argument("invalid cpp_int decimal string");
+            }
+            block = block * 10 + static_cast<std::uint32_t>(value[i] - '0');
+        }
+
+        limbs.push_back(block);
+        end = begin;
+    }
+
+    negative = is_negative;
+    normalize();
+}
+
+void cpp_int::shift_base_add(std::uint32_t block)
+{
+    if (is_zero())
+    {
+        limbs[0] = block;
+    }
+    else
+    {
+        limbs.insert(limbs.begin(), block);
+    }
+    normalize();
+}
+
+int cpp_int::compare_abs(const cpp_int &lhs, const cpp_int &rhs)
+{
+    if (lhs.limbs.size() != rhs.limbs.size())
+    {
+        return lhs.limbs.size() < rhs.limbs.size() ? -1 : 1;
+    }
+
+    for (std::size_t i = lhs.limbs.size(); i > 0; --i)
+    {
+        if (lhs.limbs[i - 1] != rhs.limbs[i - 1])
+        {
+            return lhs.limbs[i - 1] < rhs.limbs[i - 1] ? -1 : 1;
         }
     }
-    res.pop_zero();
-    if (res.digits.empty())
-    {
-        return BigInt(0);
-    }
-    return res;
+
+    return 0;
 }
-BigInt BigInt::cut(int start, int end) const
+
+cpp_int cpp_int::add_abs(const cpp_int &lhs, const cpp_int &rhs)
 {
-    BigInt res;
-    res.is_positive = is_positive;
-    res.digits = std::vector<int>(digits.begin() + start, digits.begin() + end);
-    return res;
+    cpp_int result;
+    result.limbs.clear();
+
+    std::uint64_t carry = 0;
+    const std::size_t count = std::max(lhs.limbs.size(), rhs.limbs.size());
+
+    for (std::size_t i = 0; i < count || carry; ++i)
+    {
+        std::uint64_t sum = carry;
+        if (i < lhs.limbs.size())
+        {
+            sum += lhs.limbs[i];
+        }
+        if (i < rhs.limbs.size())
+        {
+            sum += rhs.limbs[i];
+        }
+
+        result.limbs.push_back(static_cast<std::uint32_t>(sum % BASE));
+        carry = sum / BASE;
+    }
+
+    result.normalize();
+    return result;
+}
+
+cpp_int cpp_int::sub_abs(const cpp_int &lhs, const cpp_int &rhs)
+{
+    cpp_int result;
+    result.limbs.clear();
+
+    std::int64_t borrow = 0;
+
+    for (std::size_t i = 0; i < lhs.limbs.size(); ++i)
+    {
+        std::int64_t cur = static_cast<std::int64_t>(lhs.limbs[i]) - borrow;
+        if (i < rhs.limbs.size())
+        {
+            cur -= rhs.limbs[i];
+        }
+
+        if (cur < 0)
+        {
+            cur += BASE;
+            borrow = 1;
+        }
+        else
+        {
+            borrow = 0;
+        }
+
+        result.limbs.push_back(static_cast<std::uint32_t>(cur));
+    }
+
+    result.normalize();
+    return result;
+}
+
+cpp_int cpp_int::mul_abs_small(const cpp_int &value, std::uint32_t multiplier)
+{
+    if (multiplier == 0 || value.is_zero())
+    {
+        return cpp_int(0);
+    }
+
+    cpp_int result;
+    result.limbs.clear();
+    result.negative = false;
+
+    std::uint64_t carry = 0;
+    for (std::size_t i = 0; i < value.limbs.size() || carry; ++i)
+    {
+        std::uint64_t cur = carry;
+        if (i < value.limbs.size())
+        {
+            cur += static_cast<std::uint64_t>(value.limbs[i]) * multiplier;
+        }
+
+        result.limbs.push_back(static_cast<std::uint32_t>(cur % BASE));
+        carry = cur / BASE;
+    }
+
+    result.normalize();
+    return result;
+}
+
+cpp_int cpp_int::div_abs_small(const cpp_int &value, std::uint32_t divisor, std::uint32_t *remainder)
+{
+    if (divisor == 0)
+    {
+        throw std::runtime_error("division by zero");
+    }
+
+    cpp_int result;
+    result.limbs.assign(value.limbs.size(), 0);
+    result.negative = false;
+
+    std::uint64_t rem = 0;
+
+    for (std::size_t i = value.limbs.size(); i > 0; --i)
+    {
+        std::uint64_t cur = value.limbs[i - 1] + rem * BASE;
+        result.limbs[i - 1] = static_cast<std::uint32_t>(cur / divisor);
+        rem = cur % divisor;
+    }
+
+    if (remainder)
+    {
+        *remainder = static_cast<std::uint32_t>(rem);
+    }
+
+    result.normalize();
+    return result;
+}
+
+void cpp_int::div_mod_abs(const cpp_int &lhs, const cpp_int &rhs, cpp_int &quotient, cpp_int &remainder)
+{
+    if (rhs.is_zero())
+    {
+        throw std::runtime_error("division by zero");
+    }
+
+    if (compare_abs(lhs, rhs) < 0)
+    {
+        quotient = 0;
+        remainder = lhs;
+        remainder.negative = false;
+        return;
+    }
+
+    std::uint32_t norm = BASE / (rhs.limbs.back() + 1u);
+    cpp_int a = mul_abs_small(lhs, norm);
+    cpp_int b = mul_abs_small(rhs, norm);
+
+    quotient.limbs.assign(a.limbs.size(), 0);
+    quotient.negative = false;
+    remainder = 0;
+
+    for (std::size_t i = a.limbs.size(); i > 0; --i)
+    {
+        remainder.shift_base_add(a.limbs[i - 1]);
+
+        const std::size_t b_size = b.limbs.size();
+        const std::uint64_t high = remainder.limbs.size() > b_size ? remainder.limbs[b_size] : 0;
+        const std::uint64_t next = remainder.limbs.size() > b_size - 1 ? remainder.limbs[b_size - 1] : 0;
+
+        std::uint64_t guess = (high * BASE + next) / b.limbs.back();
+        if (guess >= BASE)
+        {
+            guess = BASE - 1;
+        }
+
+        cpp_int product = mul_abs_small(b, static_cast<std::uint32_t>(guess));
+        while (compare_abs(product, remainder) > 0)
+        {
+            --guess;
+            product = sub_abs(product, b);
+        }
+
+        remainder = sub_abs(remainder, product);
+        quotient.limbs[i - 1] = static_cast<std::uint32_t>(guess);
+    }
+
+    quotient.normalize();
+    remainder = div_abs_small(remainder, norm);
+    remainder.normalize();
+}
+
+cpp_int operator+(const cpp_int &lhs, const cpp_int &rhs)
+{
+    cpp_int result;
+
+    if (lhs.negative == rhs.negative)
+    {
+        result = cpp_int::add_abs(lhs, rhs);
+        result.negative = lhs.negative;
+    }
+    else
+    {
+        int cmp = cpp_int::compare_abs(lhs, rhs);
+        if (cmp >= 0)
+        {
+            result = cpp_int::sub_abs(lhs, rhs);
+            result.negative = lhs.negative;
+        }
+        else
+        {
+            result = cpp_int::sub_abs(rhs, lhs);
+            result.negative = rhs.negative;
+        }
+    }
+
+    result.normalize();
+    return result;
+}
+
+cpp_int operator-(const cpp_int &lhs, const cpp_int &rhs)
+{
+    return lhs + (-rhs);
+}
+
+cpp_int operator*(const cpp_int &lhs, const cpp_int &rhs)
+{
+    if (lhs.is_zero() || rhs.is_zero())
+    {
+        return cpp_int(0);
+    }
+
+    cpp_int result;
+    result.limbs.assign(lhs.limbs.size() + rhs.limbs.size(), 0);
+    result.negative = lhs.negative != rhs.negative;
+
+    for (std::size_t i = 0; i < lhs.limbs.size(); ++i)
+    {
+        std::uint64_t carry = 0;
+
+        for (std::size_t j = 0; j < rhs.limbs.size() || carry; ++j)
+        {
+            std::uint64_t cur = result.limbs[i + j] + carry;
+            if (j < rhs.limbs.size())
+            {
+                cur += static_cast<std::uint64_t>(lhs.limbs[i]) * rhs.limbs[j];
+            }
+
+            result.limbs[i + j] = static_cast<std::uint32_t>(cur % cpp_int::BASE);
+            carry = cur / cpp_int::BASE;
+        }
+    }
+
+    result.normalize();
+    return result;
+}
+
+cpp_int operator/(const cpp_int &lhs, const cpp_int &rhs)
+{
+    cpp_int abs_lhs = lhs;
+    cpp_int abs_rhs = rhs;
+    cpp_int quotient;
+    cpp_int remainder;
+
+    abs_lhs.negative = false;
+    abs_rhs.negative = false;
+
+    cpp_int::div_mod_abs(abs_lhs, abs_rhs, quotient, remainder);
+
+    quotient.negative = lhs.negative != rhs.negative;
+    quotient.normalize();
+    return quotient;
+}
+
+cpp_int operator%(const cpp_int &lhs, const cpp_int &rhs)
+{
+    cpp_int abs_lhs = lhs;
+    cpp_int abs_rhs = rhs;
+    cpp_int quotient;
+    cpp_int remainder;
+
+    abs_lhs.negative = false;
+    abs_rhs.negative = false;
+
+    cpp_int::div_mod_abs(abs_lhs, abs_rhs, quotient, remainder);
+
+    remainder.negative = lhs.negative;
+    remainder.normalize();
+    return remainder;
+}
+
+cpp_int operator<<(cpp_int lhs, unsigned int shift)
+{
+    lhs <<= shift;
+    return lhs;
+}
+
+cpp_int operator>>(cpp_int lhs, unsigned int shift)
+{
+    lhs >>= shift;
+    return lhs;
+}
+
+bool operator==(const cpp_int &lhs, const cpp_int &rhs)
+{
+    return lhs.negative == rhs.negative && lhs.limbs == rhs.limbs;
+}
+
+bool operator!=(const cpp_int &lhs, const cpp_int &rhs)
+{
+    return !(lhs == rhs);
+}
+
+bool operator<(const cpp_int &lhs, const cpp_int &rhs)
+{
+    if (lhs.negative != rhs.negative)
+    {
+        return lhs.negative;
+    }
+
+    int cmp = cpp_int::compare_abs(lhs, rhs);
+    return lhs.negative ? cmp > 0 : cmp < 0;
+}
+
+bool operator>(const cpp_int &lhs, const cpp_int &rhs)
+{
+    return rhs < lhs;
+}
+
+bool operator<=(const cpp_int &lhs, const cpp_int &rhs)
+{
+    return !(rhs < lhs);
+}
+
+bool operator>=(const cpp_int &lhs, const cpp_int &rhs)
+{
+    return !(lhs < rhs);
+}
+
+std::istream &operator>>(std::istream &in, cpp_int &value)
+{
+    std::string text;
+    in >> text;
+    value = text;
+    return in;
+}
+
+std::ostream &operator<<(std::ostream &out, const cpp_int &value)
+{
+    if (value.negative && !value.is_zero())
+    {
+        out << '-';
+    }
+
+    out << value.limbs.back();
+
+    for (std::size_t i = value.limbs.size() - 1; i > 0; --i)
+    {
+        out << std::setw(cpp_int::BASE_DIGITS) << std::setfill('0') << value.limbs[i - 1];
+    }
+
+    return out;
+}
+
+cpp_int abs(const cpp_int &value)
+{
+    return value < 0 ? -value : value;
 }
